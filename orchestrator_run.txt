@@ -1,0 +1,318 @@
+METADATA ORCHESTRATOR - USER GUIDE (NEW SYSTEM)
+==============================================
+
+This document explains how to install, configure, and run the metadata-driven
+workflow on a fresh machine. Project root is the folder that contains src/,
+input/, mock_utility.py, local_ingest_server.py, and requirements.txt.
+
+
+1. WHAT THIS PROJECT DOES (MAIN FUNCTIONAL LOGIC)
+-------------------------------------------------
+
+The pipeline runs a JSON-defined workflow:
+
+ A) metadata_reader (src/metadata_reader.py)
+     - load_metadata(path): read workflow JSON from disk, validate template rules (workflow, executionMode, config, steps, placeholders, etc.),
+       normalize shape (ensure input dicts on steps, etc.).
+     - clean_metadata(metadata): optional slim copy with only execution fields.
+
+  B) executor (src/executor.py)
+     - execute_workflow(metadata, dump_context=False): async runner that
+       loops metadata["steps"], resolves $context.* placeholders in each
+       step input, deep-copies steps so original metadata is not mutated,
+       dispatches to actions via action_map, stores optional step["output"]
+       results in Context, logs step index and timing, fails fast on errors.
+
+  C) context (src/context.py)
+     - Key/value store between steps. Forbidden keys for set(): _step_reference,
+       steps, config. get() raises if key missing.
+
+  D) actions (src/actions.py)
+     - Async handlers keyed by JSON action names: sendEmail, getSubmissionId,
+       validateKafka, validateKafkaJson, uiIntake.
+     - send_email: calls mock_utility.send_email_api(file) [HTTP POST ingest],
+       sets submissionId on context.
+     - validate_kafka: reads submissionId from context and stage from step
+       input; calls mock_utility.validate_kafka_event (which polls
+       wait_for_event / GET /events); returns True.
+
+  E) mock_utility.py (project root)
+     - send_email_api(file_name): POST {METADATA_API_BASE}/ingest with JSON
+       {"fileName": file_name}; expects {"submissionId": "..."} in response.
+     - wait_for_event(submission_id, stage, timeout=15): polls GET
+       {METADATA_API_BASE}/events?submissionId=&stage= until JSON indicates
+       an event (found: true, non-empty events[], or event key).
+     - validate_kafka_event(submission_id, stage): logs validation line,
+       then wait_for_event.
+
+Flow in one sentence:
+  Load and validate JSON → execute_workflow → for each step: resolve input,
+  call action → optional context output → next step.
+
+
+2. DIRECTORY AND PATH CONVENTIONS
+---------------------------------
+
+  PROJECT_ROOT/
+    src/
+      metadata_reader.py load, validate, normalize, clean_metadata
+      executor.py execute_workflow, resolve_input
+      context.py              Context
+      actions.py              action_map, handlers
+      main.py                 example: load_metadata only
+    input/
+      energy_siccode_bmq.json     valid sample workflow
+      energy_siccode_bmq_neg1.json invalid sample (validation testing)
+      metadata_template.json      documentation-heavy template
+    mock_utility.py           HTTP client helpers (ingest + events poll)
+    local_ingest_server.py    FastAPI dev stub for /ingest and /events
+    requirements.txt
+    test_metadata_reader.py
+    test_context.py
+    test_action_layer.py
+    test_execution.py
+    help.txt
+    orchestrator_run.txt      this guide
+
+When running scripts from PROJECT_ROOT, Python must find src/ for imports
+(context, actions, metadata_reader, executor). Typical patterns:
+
+  PowerShell (from PROJECT_ROOT):
+    $env:PYTHONPATH = "src"
+    python test_execution.py
+
+  Or insert path in code (tests do): sys.path.insert(0, str(ROOT / "src"))
+
+
+3. PREREQUISITES
+----------------
+
+  - Python 3.10+ recommended (3.11/3.12/3.14 tested in development).
+  - pip; network for pip install and for runtime HTTP to METADATA_API_BASE
+    (default http://127.0.0.1:8010).
+
+
+4. INSTALLATION (NEW SYSTEM)
+----------------------------
+
+  cd PROJECT_ROOT
+  python -m venv .venv
+
+  Windows:
+    .venv\Scripts\activate
+
+  Unix/macOS:
+    source .venv/bin/activate
+
+  pip install -r requirements.txt
+
+  Installed packages include: requests, fastapi, uvicorn (for local stub).
+
+
+5. CONFIGURATION — ENVIRONMENT VARIABLES
+----------------------------------------
+
+ METADATA_API_BASE
+    Base URL for HTTP APIs used by mock_utility (no trailing slash required;
+    code strips it). Default: http://127.0.0.1:8010
+    Ingest URL:  {METADATA_API_BASE}/ingest
+    Events URL:   {METADATA_API_BASE}/events
+
+ If your real backend listens elsewhere, set for both shell and IDE, e.g.:
+      Windows PowerShell:
+        $env:METADATA_API_BASE = "http://127.0.0.1:9000"
+      Unix:
+        export METADATA_API_BASE=http://127.0.0.1:9000
+
+    Note: src/actions.py imports mock_utility; send_email_api and polling
+    both honor this variable inside mock_utility.
+
+  METADATA_API_PORT
+    Only used by local_ingest_server.py when you run:
+      python local_ingest_server.py
+    Default port: 8010
+    Override:
+      Windows: $env:METADATA_API_PORT = "8020"
+      Unix:    export METADATA_API_PORT=8020
+    If you change the stub port, set METADATA_API_BASE to match, e.g.
+    http://127.0.0.1:8020
+
+  PYTHONIOENCODING (optional, Windows)
+    Logs use ASCII arrows in some places; if you add Unicode logs and see
+    UnicodeEncodeError on console, try:
+      $env:PYTHONIOENCODING = "utf-8"
+
+
+6. WORKFLOW INPUT JSON (WHAT GOES IN input/*.json)
+--------------------------------------------------
+
+ Operational top-level keys (required for validation):
+    workflow        string name
+    executionMode   e.g. "full" or "stage-only"
+    config          object with region, lob, goldDataPath, documentId, etc.
+    steps           array of step objects
+
+  Optional documentation keys (validated only if present):
+    _schema_version, _description, _config_notes, _step_reference
+
+  Each step typically includes:
+    action   string, must be one of: sendEmail, getSubmissionId, validateKafka,
+             validateKafkaJson, uiIntake
+    input    object (normalized to {} if missing); may contain string values like "$context.submissionId" resolved at run time
+    output   optional string key name: executor stores the action return value
+             in context under this name
+
+  Example fragment:
+    "steps": [
+      { "action": "sendEmail",
+        "input": { "file": "...", "mailbox": "NA_INGESTION_RC", ... },
+        "output": "emailSubject" },
+      { "action": "validateKafka",
+        "input": { "stage": "100", "timeoutMs": 300000 },
+        "output": "kafkaMsg_100" }
+    ]
+
+  Load and validate in Python:
+    from pathlib import Path
+    import sys
+    sys.path.insert(0, "src")
+    from metadata_reader import load_metadata
+    meta = load_metadata(Path("input/energy_siccode_bmq.json"))
+
+
+7. MOCK VS LOCAL STUB (IMPORTANT FOR NEW USERS)
+-----------------------------------------------
+
+  mock_utility.py is NOT only "fake" data: it is the real HTTP client module
+  used in production-style runs. The name reflects historical testing; it
+  implements:
+    - send_email_api: real POST to METADATA_API_BASE/ingest
+    - wait_for_event: real GET polling to METADATA_API_BASE/events
+    - validate_kafka_event → wraps wait_for_event
+
+  Unit tests avoid the network by patching:
+    mock_utility.requests.post
+    mock_utility.wait_for_event
+
+  local_ingest_server.py is a separate FastAPI app for LOCAL DEVELOPMENT.
+  It implements the same contract as mock_utility expects:
+    POST /ingest   JSON {"fileName":"..."} → {"submissionId":"SUB-..."}
+    GET  /events   query submissionId, stage → JSON with found: true (stub)
+
+  Without local_ingest_server (or a compatible backend), send_email_api and
+  polling will fail with connection errors or HTTP 4xx/5xx.
+
+
+8. RUNNING THE LOCAL STUB API
+-----------------------------
+
+  Terminal 1 (from PROJECT_ROOT):
+    python local_ingest_server.py
+
+  Default: http://127.0.0.1:8010
+  Health: open browser or curl GET http://127.0.0.1:8010/docs (FastAPI Swagger)
+
+  Stop: Ctrl+C in that terminal, or end the process using that port.
+
+  Port already in use (Windows):
+    Find process on 8010 and stop it, or set METADATA_API_PORT and
+    METADATA_API_BASE to a free port pair.
+
+
+9. RUNNING THE ORCHESTRATOR (EXECUTOR)
+--------------------------------------
+
+  Ensure METADATA_API_BASE points at a running ingest/events API (section 8).
+
+  Example: async workflow from PROJECT_ROOT with PYTHONPATH=src:
+
+    import asyncio, sys
+    from pathlib import Path
+    ROOT = Path(__file__).resolve().parent  # or Path.cwd()
+    sys.path.insert(0, str(ROOT / "src"))
+    from metadata_reader import load_metadata
+    from executor import execute_workflow
+
+    async def main():
+        meta = load_metadata(ROOT / "input" / "energy_siccode_bmq.json")
+        # Optional: only first two logical steps (sendEmail + validateKafka):
+        meta = {**meta, "steps": [meta["steps"][0], meta["steps"][2]]}
+        await execute_workflow(meta, dump_context=True)
+
+    asyncio.run(main())
+
+  execute_workflow keywords:
+    dump_context=True prints Context.dump() after success.
+
+
+10. AUTOMATED TESTS (NO STUB REQUIRED FOR MOST)
+----------------------------------------------
+
+  From PROJECT_ROOT, with network mocks in tests (patch mock_utility):
+
+    $env:PYTHONPATH = "src"
+    python test_metadata_reader.py
+    python test_context.py
+    python test_action_layer.py
+    python test_execution.py
+
+  These patch HTTP/poll calls; they do not require local_ingest_server.
+
+
+11. END-TO-END TEST (REQUIRES STUB OR REAL API)
+-----------------------------------------------
+
+  1) Start: python local_ingest_server.py
+  2) Run the executor example in section 9 (full path through send_email_api
+     and validate_kafka_event against live HTTP).
+
+  Expect logs such as:
+       [ACTION -> API]  ... send_email_api /ingest
+    [ACTION -> POLL] ... validate_kafka_event /events
+    [POLL SUCCESS] or retries until timeout
+
+
+12. TROUBLESHOOTING
+-------------------
+
+  ImportError: No module named 'context'
+    Set PYTHONPATH to include src, or run from a script that inserts src.
+
+  ImportError: No module named 'mock_utility' (from actions.py)
+    actions.py adds PROJECT_ROOT to sys.path; run with cwd = PROJECT_ROOT.
+
+  404 on /ingest
+    Wrong server on that port, or METADATA_API_BASE mismatch. Use
+    local_ingest_server or align your backend with JSON ingest contract.
+
+  Connection refused
+    Stub not running; start local_ingest_server or fix METADATA_API_BASE.
+
+  Port 8010 already in use
+    Stop the other process or run stub on another port and set
+    METADATA_API_BASE accordingly.
+
+  Validation failed on JSON
+    See stderr [VALIDATION] lines; compare with input/metadata_template.json
+    and a known-good file like energy_siccode_bmq.json.
+
+
+13. QUICK REFERENCE - ACTION MAP
+--------------------------------
+
+  sendEmail           -> send_email (Python)
+  getSubmissionId     -> get_submission_id
+  validateKafka       -> validate_kafka
+  validateKafkaJson   -> validate_kafka_json
+  uiIntake            -> ui_intake
+
+  Exact spelling and camelCase must match JSON "action" fields.
+
+
+14. FURTHER READING
+-------------------
+
+  help.txt              narrative workflow and test commands
+  prompt_TS_conversion.txt  notes for TypeScript port parity
+
+End of orchestrator_run.txt

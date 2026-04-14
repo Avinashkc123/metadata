@@ -1,0 +1,247 @@
+{
+    "_schema_version": "1.0",
+    "_description": "Metadata-driven orchestration template for BMQ submission intake E2E tests. Copy this file and populate the placeholder values to create a new test workflow.",
+    "workflow": "<WORKFLOW_NAME>",
+    "executionMode": "full",
+    "_config_notes": {
+        "region": "Geographic region — 'NA' for North America, 'EMEA' for Europe",
+        "lob": "Line of business abbreviation — 'RC' for Risk & Casualty",
+        "goldDataPath": "Root path to all golden JSON files — always './resources/testData/emails/BMQ'",
+        "documentId": "Subfolder name under goldDataPath matching the test data folder (e.g. 'umm_monoline', 'LMMBmq')",
+        "configFile": "Path to field-name→jsonPath mapping config — always './resources/testData/emails/BMQ/config.json'",
+        "prodCode": "Product code for submission lookup — '8901' for BMQ",
+        "country": "ISO country code — 'US'",
+        "lobCode": "Numeric LOB code — '30' for RC",
+        "compareFields": "Array of field names from configFile to diff between actual downloaded JSON and golden file"
+    },
+    "config": {
+        "region": "NA",
+        "lob": "RC",
+        "goldDataPath": "./resources/testData/emails/BMQ",
+        "documentId": "<TEST_DATA_SUBFOLDER>",
+        "configFile": "./resources/testData/emails/BMQ/config.json",
+        "prodCode": "8901",
+        "country": "US",
+        "lobCode": "30",
+        "compareFields": [
+            "Policy Type",
+            "SIC Code",
+            "Triage Color",
+            "Customer Group",
+            "System",
+            "Status",
+            "Decline Reason\\(optional\\)",
+            "Product",
+            "Service Branch"
+        ]
+    },
+    "_step_reference": {
+        "_overview": "Steps execute in array order. Each step maps to one action in actionMap.ts. The 'output' key stores the result in ContextManager under that key name.",
+        "available_actions": {
+            "sendEmail": "Sends an .eml file via SMTP. Stores subject in context. MUST be step 1.",
+            "getSubmissionId": "Polls SQL Server to find submission by email subject. MUST follow sendEmail.",
+            "validateKafka": "Presence-check only (stages 100, 500, 800) — asserts message exists.",
+            "validateKafkaJson": "Downloads JSON from ADLS URI (stages 1200, 1700, 2200) — compares with golden file.",
+            "uiIntake": "Drives browser actions via operation dispatch — see available operations below."
+        },
+        "mailbox_options": {
+            "NA_INGESTION_RC": "Standard BMQ: UMM, LMM, LifeScience, Energy, FI submissions",
+            "NA_INGESTION_LMM_CONSTRUCTION": "LMM Construction and Declined CMQ submissions only",
+            "NA_INGESTION_RC_CISA": "RC CISA submissions only"
+        },
+        "uiIntake_operations": {
+            "openSDW": "Navigate to SDW_URL (process.env.SDW_URL)",
+            "searchSubmission": "Search submission by ID in SDW",
+            "assignReviewer": "Assign submission to reviewer + open intake form (60s wait for system latency)",
+            "loadGoldenData": "Pre-load 1700.json and 2200.json golden data into context",
+            "selectAllFields": "Click 'All Fields' toggle in intake form",
+            "validateInsuredAndProducer": "Validate/fill Insured and Producer tab using golden data",
+            "validateProcessingTab": "Validate/fill Processing tab using golden data",
+            "validatePoliciesTab": "Validate/fill Policies tab using golden data",
+            "validateUwUa": "[MULTI-LINE ONLY] Assert UW and UA fields are not blank",
+            "fillReviewerDetails": "[MULTI-LINE ONLY] Fill reviewer details form",
+            "submitForReview": "Save and submit the intake transaction"
+        },
+        "stage_timeouts": {
+            "100": "300000ms  (5 min) — ingestion presence check",
+            "500": "300000ms  (5 min) — extraction presence check",
+            "800": "900000ms  (15 min) — classification presence check",
+            "1200": "300000ms  (5 min) — intermediate JSON download + compare",
+            "1700": "900000ms  (15 min) — standardisation JSON download + compare (1200000ms for LMM Construction)",
+            "2200": "900000ms  (15 min) — completion JSON download + compare"
+        },
+        "complexity_tiers": {
+            "simple": "Monoline. Steps: sendEmail → getSubmissionId → stages 100/500/800/1200/1700 → UI (openSDW→searchSubmission→assignReviewer→loadGoldenData→selectAllFields→validateInsuredAndProducer→validateProcessingTab→validatePoliciesTab) → submitForReview → stage 2200",
+            "medium": "Same as simple BUT includes validateUwUa + fillReviewerDetails after validatePoliciesTab (multi-line), OR non-standard mailbox, OR special business rule (e.g. state-specific derivation, declined product)",
+            "complex": "Multi-line with validateUwUa + fillReviewerDetails AND non-standard mailbox or extended timeouts"
+        }
+    },
+    "steps": [
+        {
+            "_note": "STEP 1 — Always first. File name WITHOUT .eml extension. lob path = 'BMQ/<documentId>'",
+            "action": "sendEmail",
+            "input": {
+                "file": "<EMAIL_FILENAME_WITHOUT_EXTENSION>",
+                "lob": "BMQ/<TEST_DATA_SUBFOLDER>",
+                "mailbox": "<MAILBOX_ENUM_KEY>"
+            },
+            "output": "emailSubject"
+        },
+        {
+            "_note": "STEP 2 — Always second. Polls DB for submission by email subject.",
+            "action": "getSubmissionId",
+            "output": "submissionId"
+        },
+        {
+            "_note": "STEP 3 — Kafka presence check: stage 100 (Ingestion)",
+            "action": "validateKafka",
+            "stage": "100",
+            "input": {
+                "stage": "100",
+                "timeoutMs": 300000
+            },
+            "output": "kafkaMsg_100"
+        },
+        {
+            "_note": "STEP 4 — Kafka presence check: stage 500 (Extraction)",
+            "action": "validateKafka",
+            "stage": "500",
+            "input": {
+                "stage": "500",
+                "timeoutMs": 300000
+            },
+            "output": "kafkaMsg_500"
+        },
+        {
+            "_note": "STEP 5 — Kafka presence check: stage 800 (Classification)",
+            "action": "validateKafka",
+            "stage": "800",
+            "input": {
+                "stage": "800",
+                "timeoutMs": 900000
+            },
+            "output": "kafkaMsg_800"
+        },
+        {
+            "_note": "STEP 6 — Kafka JSON: stage 1200 (Intermediate). Downloads + compares 1200.json",
+            "action": "validateKafkaJson",
+            "stage": "1200",
+            "input": {
+                "stage": "1200",
+                "timeoutMs": 300000,
+                "goldenFile": "1200.json"
+            },
+            "output": "kafkaMsg_1200"
+        },
+        {
+            "_note": "STEP 7 — Kafka JSON: stage 1700 (Standardisation). Also pre-loads golden data for UI steps. Use 1200000ms for LMM Construction.",
+            "action": "validateKafkaJson",
+            "stage": "1700",
+            "input": {
+                "stage": "1700",
+                "timeoutMs": 900000,
+                "goldenFile": "1700.json"
+            },
+            "output": "kafkaMsg_1700"
+        },
+        {
+            "_note": "UI STEP 1 — Open SDW browser",
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "openSDW"
+            }
+        },
+        {
+            "_note": "UI STEP 2 — Search by submission ID",
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "searchSubmission"
+            }
+        },
+        {
+            "_note": "UI STEP 3 — Assign reviewer + open intake (includes 60s system latency wait)",
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "assignReviewer"
+            }
+        },
+        {
+            "_note": "UI STEP 4 — Load 1700.json + 2200.json golden data into context (skip if validateKafkaJson stage 1700 already ran — it auto-loads golden data)",
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "loadGoldenData"
+            }
+        },
+        {
+            "_note": "UI STEP 5 — Select All Fields toggle",
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "selectAllFields"
+            }
+        },
+        {
+            "_note": "UI STEP 6 — Validate Insured and Producer tab",
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "validateInsuredAndProducer"
+            }
+        },
+        {
+            "_note": "UI STEP 7 — Validate Processing tab",
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "validateProcessingTab"
+            }
+        },
+        {
+            "_note": "UI STEP 8 — Validate Policies tab",
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "validatePoliciesTab"
+            }
+        },
+        {
+            "_note": "[MULTI-LINE ONLY] UI STEP 9 — Assert UW and UA fields are derived (non-blank). Remove this step for monoline.",
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "validateUwUa"
+            }
+        },
+        {
+            "_note": "[MULTI-LINE ONLY] UI STEP 10 — Fill reviewer details form. Remove this step for monoline.",
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "fillReviewerDetails"
+            }
+        },
+        {
+            "_note": "UI STEP 11 — Save and submit intake. Stage 2200 because this triggers completion pipeline.",
+            "action": "uiIntake",
+            "stage": "2200",
+            "input": {
+                "operation": "submitForReview"
+            }
+        },
+        {
+            "_note": "STEP LAST — Kafka JSON: stage 2200 (Completion). Downloads + compares 2200.json",
+            "action": "validateKafkaJson",
+            "stage": "2200",
+            "input": {
+                "stage": "2200",
+                "timeoutMs": 900000,
+                "goldenFile": "2200.json"
+            },
+            "output": "kafkaMsg_2200"
+        }
+    ]
+}

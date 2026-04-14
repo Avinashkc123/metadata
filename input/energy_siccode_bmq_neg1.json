@@ -1,0 +1,34 @@
+{
+    "workflow": "Energy_SIC_Code_No_BMQ",
+    "executionMode": "full",
+    "config": {
+        "region": "NA",
+        "lob": "RC",
+        "goldDataPath": "./resources/testData/emails/BMQ",
+        "documentId": "energy_siccode",
+        "configFile": "./resources/testData/emails/BMQ/config.json",
+        "prodCode": "8901",
+        "country": "US",
+        "lobCode": "30",
+        "compareFields": ["Policy Type", "SIC Code", "Triage Color", "Customer Group", "System", "Status", "Decline Reason\\(optional\\)", "Product", "Service Branch"]
+    },
+    "steps": [
+        { "action": "sendEmail",       "input": { "file": "10-1774947360997-7ykyyk7wYeHi-1", "lob": "BMQ/energy_siccode", "mailbox": "NA_INGESTION_RC" }, "output": "emailSubject" },
+        { "action": "getSubmissionId", "output": "submissionId" },
+        { "action": "validateKafka",     "stage": "100",  "input": { "stage": "100",  "timeoutMs": 300000 }, "output": "kafkaMsg_100" },
+        { "action": "validateKafka",     "stage": "500",  "input": { "stage": "500",  "timeoutMs": 300000 }, "output": "kafkaMsg_500" },
+        { "action": "validateKafka",     "stage": "800",  "input": { "stage": "800",  "timeoutMs": 300000 }, "output": "kafkaMsg_800" },
+        { "action": "validateKafkaJson", "stage": "1200", "input": { "stage": "1200", "timeoutMs": 300000, "goldenFile": "1200.json" }, "output": "kafkaMsg_1200" },
+        { "action": "validateKafkaJson", "stage": "1700", "input": { "stage": "1700", "timeoutMs": 900000, "goldenFile": "1700.json" }, "output": "kafkaMsg_1700" },
+        { "action": "uiIntake", "stage": "1700", "input": { "operation": "openSDW" } },
+        { "action": "uiIntake", "stage": "1700", "input": { "operation": "searchSubmission" } },
+        { "action": "uiIntake", "stage": "1700", "input": { "operation": "assignReviewer" } },
+        { "action": "uiIntake", "stage": "1700", "input": { "operation": "loadGoldenData" } },
+        { "action": "uiIntake", "stage": "1700", "input": { "operation": "selectAllFields" } },
+        { "action": "uiIntake", "stage": "X700", "input": { "operation": "validateInsuredAndProducer" } },
+        { "action": "uiIntake", "stage": "1700", "input": { "operation": "validateProcessingTab" } },
+        { "action": "uiIntake", "stage": "1700", "input": { "operation": "validatePoliciesTab" } },
+        { "action": "uiIntake", "stage": "2200", "input": { "operation": "submitForReview" } },
+        { "action": "validateKafkaJson", "stage": "2200", "input": { "stage": "2200", "timeoutMs": 900000, "goldenFile": "2200.json" }, "output": "kafkaMsg_2200" }
+    ]
+}

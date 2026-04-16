@@ -1,0 +1,48 @@
+Feature: Energy SIC Code Processing - Non BMQ Flow
+
+  Background:
+    Given region is "NA"
+    And LOB is "RC"
+    And product code is "8901"
+    And country is "US"
+    And LOB code is "30"
+    And test data path is "./resources/testData/emails/BMQ"
+    And document id is "energy_siccode"
+    And config file is "./resources/testData/emails/BMQ/config.json"
+    And compare fields are:
+      | Policy Type |
+      | SIC Code |
+      | Triage Color |
+      | Customer Group |
+      | System |
+
+  Scenario: End-to-End ingestion, validation, and UI review flow
+
+    # Step 1–2: Ingestion & Submission Creation
+    Given email is sent with file "10-1774947360997-7ykyyk7wYeHi-1"
+    And submission id is generated
+
+    # Step 3–5: Kafka Stage Validation
+    Then Kafka stage "100" should be validated
+    And Kafka stage "500" should be validated
+    And Kafka stage "800" should be validated
+
+    # Step 6–7: Kafka JSON Validation
+    Then Kafka JSON stage "1200" should be validated
+    And Kafka JSON stage "1700" should be validated
+
+    # Step 8–15: UI Intake Operations
+    When UI operation "openSDW" is performed
+    And UI operation "searchSubmission" is performed
+    And UI operation "assignReviewer" is performed
+    And UI operation "loadGoldenData" is performed
+    And UI operation "selectAllFields" is performed
+    And UI operation "validateInsuredAndProducer" is performed
+    And UI operation "validateProcessingTab" is performed
+    And UI operation "validatePoliciesTab" is performed
+
+    # Step 16: Submit for Review
+    When UI operation "submitForReview" is performed
+
+    # Step 17: Final Kafka JSON Validation
+    Then Kafka JSON stage "2200" should be validated

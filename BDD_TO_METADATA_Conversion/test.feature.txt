@@ -1,0 +1,23 @@
+Feature: Energy SIC Code Processing
+
+  Background:
+    Given region is "NA"
+    And LOB is "RC"
+    And product code is "8901"
+    And country is "US"
+    And LOB code is "30"
+
+  Scenario: End-to-End processing
+
+    Given email is sent with file "energy.pdf"
+    When submission id is generated
+
+    Then Kafka stage "100" should be validated
+    And Kafka stage "500" should be validated
+
+    Then Kafka JSON stage "1200" should be validated
+
+    When UI operation "openSDW" is performed
+    And UI operation "submitForReview" is performed
+
+    Then Kafka JSON stage "2200" should be validated

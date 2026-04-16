@@ -1,0 +1,93 @@
+{
+    "workflow": "Energy_SIC_Code_Processing",
+    "executionMode": "full",
+    "config": {
+        "region": "NA",
+        "lob": "RC",
+        "goldDataPath": "./resources/testData/emails/BMQ",
+        "documentId": "energy_siccode",
+        "configFile": "./resources/testData/emails/BMQ/config.json",
+        "prodCode": "8901",
+        "country": "US",
+        "lobCode": "30",
+        "compareFields": [
+            "Policy Type",
+            "SIC Code",
+            "Triage Color",
+            "Customer Group",
+            "System",
+            "Status",
+            "Decline Reason\\(optional\\)",
+            "Product",
+            "Service Branch"
+        ]
+    },
+    "steps": [
+        {
+            "action": "sendEmail",
+            "input": {
+                "file": "energy.pdf",
+                "lob": "RC",
+                "mailbox": "NA_INGESTION_RC"
+            },
+            "output": "emailSubject"
+        },
+        {
+            "action": "getSubmissionId",
+            "input": {},
+            "output": "submissionId"
+        },
+        {
+            "action": "validateKafka",
+            "stage": "100",
+            "input": {
+                "stage": "100",
+                "timeoutMs": 300000
+            },
+            "output": "kafkaMsg_100"
+        },
+        {
+            "action": "validateKafka",
+            "stage": "500",
+            "input": {
+                "stage": "500",
+                "timeoutMs": 300000
+            },
+            "output": "kafkaMsg_500"
+        },
+        {
+            "action": "validateKafkaJson",
+            "stage": "1200",
+            "input": {
+                "stage": "1200",
+                "timeoutMs": 300000,
+                "goldenFile": "1200.json"
+            },
+            "output": "kafkaMsg_1200"
+        },
+        {
+            "action": "uiIntake",
+            "stage": "1700",
+            "input": {
+                "operation": "openSDW"
+            }
+        },
+        {
+            "action": "uiIntake",
+            "stage": "2200",
+            "input": {
+                "operation": "submitForReview"
+            }
+        },
+        {
+            "action": "validateKafkaJson",
+            "stage": "2200",
+            "input": {
+                "stage": "2200",
+                "timeoutMs": 900000,
+                "goldenFile": "2200.json"
+            },
+            "output": "kafkaMsg_2200"
+        }
+    ]
+}
